@@ -2,6 +2,7 @@ package dev.ftb.mods.ftbchunks.data;
 
 import com.google.gson.JsonObject;
 import com.mojang.util.UUIDTypeAdapter;
+import org.apache.commons.io.FilenameUtils;
 import dev.ftb.mods.ftbchunks.FTBChunks;
 import dev.ftb.mods.ftbchunks.FTBChunksWorldConfig;
 import dev.ftb.mods.ftbteams.FTBTeamsAPI;
@@ -9,8 +10,11 @@ import dev.ftb.mods.ftbteams.data.Team;
 import dev.ftb.mods.ftbteams.data.TeamManager;
 import me.shedaniel.architectury.hooks.LevelResourceHooks;
 import me.shedaniel.architectury.platform.Platform;
+import net.minecraft.resources.ResourceKey;
+
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.LevelResource;
 import org.jetbrains.annotations.Nullable;
 
@@ -21,8 +25,12 @@ import java.nio.file.Path;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
-
+import java.util.ArrayList;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.util.stream.Collectors;
 /**
  * @author LatvianModder
  */
@@ -37,6 +45,7 @@ public class ClaimedChunkManager {
 	public final Map<ChunkDimPos, ClaimedChunk> claimedChunks;
 	public Path dataDirectory;
 	public Path localDirectory;
+	public Path levelDataDirectory;
 
 	public ClaimedChunkManager(TeamManager m) {
 		server = m.server;
@@ -47,7 +56,7 @@ public class ClaimedChunkManager {
 
 		dataDirectory = server.getWorldPath(DATA_DIR);
 		localDirectory = Platform.getGameFolder().resolve("local/ftbchunks");
-
+        levelDataDirectory = server.getWorldPath(LevelResource.LEVEL_DATA_FILE).getParent();
 		try {
 			if (Files.notExists(dataDirectory)) {
 				Files.createDirectories(dataDirectory);
@@ -136,5 +145,54 @@ public class ClaimedChunkManager {
 
 	public Collection<ClaimedChunk> getAllClaimedChunks() {
 		return claimedChunks.values();
+	}
+	
+	public Collection<ClaimedChunk> getAllClaimedChunksForLevel(ResourceKey<Level> level) {
+		return claimedChunks.entrySet().stream().filter(map->map.getKey().dimension.equals(level))
+			.map(map-> map.getValue()).collect(Collectors.toList());
+	}
+	public Collection<String> getNamesOfRegionFilesWithClaimedChunks(ResourceKey<Level> level){
+		java.util.HashSet<String> namesOfRegionFilesWithClaimedChunks = new  java.util.HashSet<String>();
+		
+		for (ClaimedChunk claimedChunk : this.getAllClaimedChunksForLevel(level)) {	
+			XZ region = XZ.regionFromChunk(claimedChunk.getPos().getChunkPos());
+			namesOfRegionFilesWithClaimedChunks.add("r."+ region.x +"."+ region.z+ ".mca");
+		}
+		return new ArrayList<String>(namesOfRegionFilesWithClaimedChunks);
+	}
+
+	public boolean pruneRegionFiles(String fromPath,@Nullable String toPath, Collection<String> filterFileNames, boolean doBackup){
+			
+		try(java.util.stream.Stream<Path> stream =  Files.list(Paths.get(fromPath))){
+			
+			FTBChunks.LOGGER.info("Pruning from: " + fromPath);
+			
+			Set<String> regionFileNames = stream.filter(path -> !Files.isDirectory(path))
+			.map(Path::getFileName)
+			.map(Path::toString)
+			.filter(name-> "mca".equals(FilenameUtils.getExtension(name)))
+			.collect(Collectors.toSet());
+			
+			regionFileNames.removeAll(filterFileNames);
+
+			if(doBackup){
+				Files.createDirectories(Paths.get(toPath));
+				for(String filename : regionFileNames){
+					Files.move(Paths.get(fromPath + filename), Paths.get(toPath + filename), StandardCopyOption.REPLACE_EXISTING);
+					FTBChunks.LOGGER.info("Moved file: "+filename+ " to " + toPath + filename);
+				}	
+			}
+			else{
+				for(String filename : regionFileNames){
+					Files.delete(Paths.get(fromPath + filename));
+					FTBChunks.LOGGER.info("Removed file: "+filename);
+				}	
+			}
+		}
+		catch(Throwable ex){
+			FTBChunks.LOGGER.error("Faild to prune files "+ex);
+			return false;
+		}
+		return true;       
 	}
 }
